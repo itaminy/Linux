@@ -4,19 +4,21 @@
 #include<string.h>
 
 int main(){
-  printf( "$" );
   char input[ 100 ];
-while(1){
-        printf("%s:commane is not found ",input);
-        fgets(input,sizeof(input),stdin);
-        input[strcspn(input, "\n")]='\0';
-
-        if(strcmp(input, "/q") == 0){
-               printf("close...\n");
-               break;
+	while(1){
+	if (fgets(input, 99, stdin) == NULL){
+		printf("Error");
+		return 1;
+	}
+        if(strstr(input,"/q") == NULL){
+        	input[strcspn(input, "\n")] = '\0';
+                printf("%s: command is not found\n",input);
         }
-	printf("\n");
-}
-  return 0;
+        else{
+     	       printf("\nExit\n");
+               break;
+	}
+     }
 
+  return 0;
 }
