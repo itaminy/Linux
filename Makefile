@@ -1,20 +1,17 @@
-TARGET = kubsh
-BUILD_DIR = build
-
-all: build
+all: build package 
 
 build:
-	mkdir -p $(BUILD_DIR)
-	gcc -Wall -pthread -o $(BUILD_DIR)/$(TARGET) kubsh.c vfs_manager.c -lfuse3 -lreadline
+	cmake -B build .
+	cmake --build build
 
 run: build
-	./$(BUILD_DIR)/$(TARGET)
+	./build/kubsh
 
 package: build
 	mkdir -p kubsh-package/DEBIAN
 	mkdir -p kubsh-package/usr/bin
-	cp $(BUILD_DIR)/$(TARGET) kubsh-package/usr/bin/
-	chmod +x kubsh-package/usr/bin/$(TARGET)
+	cp build/kubsh kubsh-package/usr/bin/
+	chmod +x kubsh-package/usr/bin/kubsh
 	echo "Package: kubsh" > kubsh-package/DEBIAN/control
 	echo "Version: 1.0" >> kubsh-package/DEBIAN/control
 	echo "Section: utils" >> kubsh-package/DEBIAN/control
@@ -26,6 +23,6 @@ package: build
 	mv kubsh-package.deb kubsh.deb
 
 clean:
-	rm -rf $(BUILD_DIR) kubsh.deb kubsh-package
+	rm -rf build kubsh.deb kubsh-package
 
-.PHONY: all build run package clean
+.PHONY: build run package clean
