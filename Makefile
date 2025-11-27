@@ -17,7 +17,7 @@ package: build
 	echo "Section: utils" >> kubsh-package/DEBIAN/control
 	echo "Priority: optional" >> kubsh-package/DEBIAN/control
 	echo "Architecture: amd64" >> kubsh-package/DEBIAN/control
-	echo "Maintainer: Mitohondriyaa" >> kubsh-package/DEBIAN/control
+	echo "Maintainer: Mitohондриyaa" >> kubsh-package/DEBIAN/control
 	echo "Description: Kubsh" >> kubsh-package/DEBIAN/control
 	dpkg-deb --build kubsh-package
 	mv kubsh-package.deb kubsh.deb
