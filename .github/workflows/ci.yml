@@ -1,0 +1,55 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential dpkg-dev libfuse3-dev libreadline-dev
+
+      - name: Build DEB Package
+        run: |
+          make clean
+          make package
+
+      - name: Setup Docker container
+        run: | 
+          docker run -d --name kubsh-test \
+          --device /dev/fuse --cap-add SYS_ADMIN \
+          --security-opt apparmor:unconfined \
+          ubuntu:22.04 tail -f /dev/null
+
+          docker exec kubsh-test bash -c "
+          apt update
+          apt install -y fuse3 adduser
+          ln -sf /usr/lib/x86_64-linux-gnu/libfuse3.so /usr/lib/x86_64-linux-gnu/libfuse3.so.3
+          "
+
+      - name: Copy DEB to container
+        run: |
+          docker cp kubsh.deb kubsh-test:/mnt/
+
+      - name: Install and Test in Container
+        run: |
+          docker exec kubsh-test bash -c "
+            cd /mnt && apt install -y ./kubsh.deb
+            echo 'Kubsh installed. Testing basic commands...'
+            /usr/bin/kubsh -c 'echo hello'
+          "
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubsh-package
+          path: kubsh.deb
