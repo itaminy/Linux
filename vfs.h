@@ -1,6 +1,7 @@
 #ifndef VFS_H
 #define VFS_H
 
-void vfs_start();
+void fuse_start();
+void print_disk_info(const char *disk);
 
 #endif
