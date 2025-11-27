@@ -1,129 +1,96 @@
-#define FUSE_USE_VERSION 35
+#define FUSE_USE_VERSION 31
 #include <fuse3/fuse.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <pwd.h>
 #include <errno.h>
-#include <pthread.h>
 #include <unistd.h>
 
-struct fuse_operations users_operations;
+#include "vfs.h"
 
-void execute_command(char** cmd) {
-    pid_t pid = fork();
-    if (pid==0) { execvp(cmd[0], cmd); exit(EXIT_FAILURE); }
-    else if(pid>0) wait(NULL);
-}
+static struct fuse_operations vfs_ops;
 
-int can_login(struct passwd* pwd) {
-    FILE* shells = fopen("/etc/shells","r");
-    if(!shells) return 0;
-    char line[256];
-    while(fgets(line,sizeof(line),shells)) {
-        line[strcspn(line,"\n")=0;
-        if(strcmp(line,pwd->pw_shell)==0){ fclose(shells); return 1;}
-    }
-    fclose(shells);
-    return 0;
-}
-
-int users_getattr(const char* path, struct stat* st, struct fuse_file_info* fi) {
+static int vfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
     (void)fi;
-    memset(st,0,sizeof(struct stat));
-    time_t now = time(NULL);
-
-    if(strcmp(path,"/")==0){
-        st->st_mode = __S_IFDIR|0755;
-        st->st_nlink=2;
+    memset(stbuf, 0, sizeof(struct stat));
+    if (strcmp(path, "/") == 0) { stbuf->st_mode = S_IFDIR | 0755; stbuf->st_nlink = 2; return 0; }
+    char username[128]; char file[32];
+    if (sscanf(path, "/%127[^/]/%31s", username, file) == 2) {
+        struct passwd *pwd = getpwnam(username);
+        if (!pwd) return -ENOENT;
+        stbuf->st_mode = S_IFREG | 0644;
+        if (strcmp(file,"id")==0) stbuf->st_size = snprintf(NULL,0,"%d",pwd->pw_uid);
+        else if (strcmp(file,"home")==0) stbuf->st_size = strlen(pwd->pw_dir);
+        else stbuf->st_size = strlen(pwd->pw_shell);
         return 0;
     }
-
-    char username[256], filename[256];
-    if(sscanf(path,"/%255[^/]/%255[^/]",username,filename)==2){
-        struct passwd* pwd=getpwnam(username);
-        if(!pwd || !can_login(pwd)) return -ENOENT;
-        st->st_mode=__S_IFREG|0644;
-        st->st_nlink=1;
-        if(strcmp(filename,"id")==0) st->st_size=snprintf(NULL,0,"%d",pwd->pw_uid);
-        else if(strcmp(filename,"home")==0) st->st_size=strlen(pwd->pw_dir);
-        else st->st_size=strlen(pwd->pw_shell);
-        return 0;
-    }
-    if(sscanf(path,"/%255[^/]",username)==1) {
-        struct passwd* pwd=getpwnam(username);
-        if(!pwd || !can_login(pwd)) return -ENOENT;
-        st->st_mode=__S_IFDIR|0755;
-        st->st_nlink=2;
+    if (sscanf(path, "/%127s", username) == 1) {
+        struct passwd *pwd = getpwnam(username);
+        if (!pwd) return -ENOENT;
+        stbuf->st_mode = S_IFDIR | 0755; stbuf->st_nlink = 2;
         return 0;
     }
     return -ENOENT;
 }
 
-int users_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
-                  off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags){
-    (void)offset;(void)fi;(void)flags;
+static int vfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+        off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
+    (void)offset; (void)fi; (void)flags;
     filler(buf,".",NULL,0,0);
     filler(buf,"..",NULL,0,0);
-    if(strcmp(path,"/")==0){
-        struct passwd* pwd; setpwent();
-        while((pwd=getpwent())!=NULL){ if(can_login(pwd)) filler(buf,pwd->pw_name,NULL,0,0);}
+    if (strcmp(path,"/")==0) {
+        struct passwd *pwd; setpwent();
+        while ((pwd = getpwent())) {
+            filler(buf,pwd->pw_name,NULL,0,0);
+        }
         endpwent();
-        return 0;
+    } else {
+        filler(buf,"id",NULL,0,0);
+        filler(buf,"home",NULL,0,0);
+        filler(buf,"shell",NULL,0,0);
     }
-    filler(buf,"id",NULL,0,0);
-    filler(buf,"home",NULL,0,0);
-    filler(buf,"shell",NULL,0,0);
     return 0;
 }
 
-int users_mkdir(const char* path, mode_t mode){
-    (void)mode; char username[256];
-    if(sscanf(path,"/%255[^/]",username)==1){
-        struct passwd* pwd=getpwnam(username);
-        if(pwd) return -EEXIST;
-        char* cmd[]={"adduser","--disabled-password","--gecos","",username,NULL};
-        execute_command(cmd);
-        pwd=getpwnam(username);
-        return pwd?0:-EIO;
-    }
-    return -EINVAL;
+static int vfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    (void)fi;
+    char username[128], file[32];
+    if (sscanf(path, "/%127[^/]/%31s", username, file)!=2) return -ENOENT;
+    struct passwd *pwd = getpwnam(username);
+    if (!pwd) return -ENOENT;
+    char content[256]; content[0]='\0';
+    if (strcmp(file,"id")==0) snprintf(content,sizeof(content),"%d",pwd->pw_uid);
+    else if (strcmp(file,"home")==0) snprintf(content,sizeof(content),"%s",pwd->pw_dir);
+    else snprintf(content,sizeof(content),"%s",pwd->pw_shell);
+    size_t len = strlen(content);
+    if (offset>=len) return 0;
+    if (offset+size>len) size=len-offset;
+    memcpy(buf, content+offset, size);
+    return size;
 }
 
-int users_rmdir(const char* path){
-    char username[256];
-    if(sscanf(path,"/%255[^/]",username)==1){
-        struct passwd* pwd=getpwnam(username);
-        if(!pwd) return -ENOENT;
-        char* cmd[]={"userdel","--remove",username,NULL};
-        execute_command(cmd);
-        pwd=getpwnam(username);
-        return pwd? -EIO:0;
-    }
-    return -EPERM;
-}
-
-void* fuse_thread(void* arg){
+static void *fuse_thread(void *arg) {
     (void)arg;
+    char *mount = getenv("HOME"); char mountpoint[256];
+    snprintf(mountpoint,sizeof(mountpoint),"%s/users", mount);
+    mkdir(mountpoint,0755);
     struct fuse_args args = FUSE_ARGS_INIT(0,NULL);
-    fuse_opt_add_arg(&args,"");
-    fuse_opt_add_arg(&args,"-odefault_permissions");
-    fuse_opt_add_arg(&args,"-oauto_unmount");
-    struct fuse* fuse_instance = fuse_new(&args,&users_operations,sizeof(users_operations),NULL);
-    char* mount = malloc(strlen(getenv("HOME"))+7);
-    sprintf(mount,"%s/users",getenv("HOME"));
-    mkdir(mount,0755);
-    fuse_mount(fuse_instance,mount);
-    fuse_loop(fuse_instance);
+    struct fuse *fuse_inst = fuse_new(&args, &vfs_ops, sizeof(vfs_ops), NULL);
+    fuse_mount(fuse_inst,mountpoint);
+    fuse_loop(fuse_inst);
     return NULL;
 }
 
-void vfs_start(){
-    pthread_t th;
-    users_operations.getattr = users_getattr;
-    users_operations.readdir = users_readdir;
-    users_operations.mkdir = users_mkdir;
-    users_operations.rmdir = users_rmdir;
-    pthread_create(&th,NULL,fuse_thread,NULL);
+void fuse_start() {
+    vfs_ops.getattr = vfs_getattr;
+    vfs_ops.readdir = vfs_readdir;
+    vfs_ops.read = vfs_read;
+    pthread_t tid; pthread_create(&tid,NULL,fuse_thread,NULL);
+}
+
+void print_disk_info(const char *disk) {
+    printf("Mock disk info for %s (implement reading /dev if needed)\n", disk);
 }
