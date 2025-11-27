@@ -4,7 +4,7 @@ on:
   push:
     branches: [ master ]
   workflow_dispatch:
-
+ 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -25,20 +25,26 @@ jobs:
 
       - name: Setup Docker container
         run: | 
-          docker run -v $(pwd)/kubsh.deb:/mnt/kubsh.deb -d --name kubsh-test \
+          docker run -d --name kubsh-test \
           --device /dev/fuse --cap-add SYS_ADMIN \
           --security-opt apparmor:unconfined \
-          ubuntu:22.04 tail -f /dev/null
+          tyvik/kubsh_test:master tail -f /dev/null
+
           docker exec kubsh-test bash -c "
-            apt update
-            apt install -y fuse3 adduser
+          apt update
+          apt install -y fuse3 adduser
+          ln -sf /usr/lib/x86_64-linux-gnu/libfuse3.so /usr/lib/x86_64-linux-gnu/libfuse3.so.3
           "
+        
+      - name: Copy files to container
+        run: |
+          docker cp kubsh.deb kubsh-test:/mnt/
 
       - name: Run tests in container
         run: |
           docker exec kubsh-test bash -c "
             cd /mnt && apt install -y ./kubsh.deb
-            cd /opt && ./check.sh
+            cd /opt && pytest -v
           "
 
       - name: Upload artifact
