@@ -3,78 +3,106 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
-#include <readline/readline.h>
 #include <readline/history.h>
+#include <readline/readline.h>
 #include <sys/wait.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include "vfs.h"
 
-extern void fuse_start(void);  // VFS (задание 11)
+#define HISTORY_PATH "/.kubsh_history"
 
-volatile sig_atomic_t sighup_received = 0;
+static volatile sig_atomic_t reload_cfg = 0;
 
-// === Задание 9: Обработка сигнала SIGHUP ===
-void handle_sighup(int sig) {
-    write(STDOUT_FILENO, "\nConfiguration reloaded\n", 24);
-    sighup_received = 1;
+// === Задание 9: обработка SIGHUP ===
+void sighup_handler(int sig) {
+    (void)sig;
+    write(1, "Configuration reloaded\n", 24);
+    reload_cfg = 1;
 }
 
-// === Задания 1,2,3,5,6,7,8,10 ===
-void execute_command(char* cmd) {
-    // === Задание 3: команда выхода \q ===
-    if (strcmp(cmd, "\\q") == 0) exit(0);
-
-    // === Задание 5: echo ===
-    if (strncmp(cmd, "echo ", 5) == 0) {
-        printf("%s\n", cmd + 5);
-        return;
-    }
-
-    // === Задание 7: вывод переменной окружения ===
-    if (strncmp(cmd, "\\e $", 4) == 0) {
-        char* val = getenv(cmd + 4);
-        if (!val) { fprintf(stderr, "Env variable not set\n"); return; }
-        char* tok = strtok(val, ":");
-        while (tok) { printf("%s\n", tok); tok = strtok(NULL, ":"); }
-        return;
-    }
-
-    // === Задание 10: информация о диске (stub) ===
-    if (strncmp(cmd, "\\l ", 3) == 0) {
-        printf("Disk info for %s (stub, real parsing in vfs.c)\n", cmd+3);
-        return;
-    }
-
-    // === Задание 8: выполнение бинарника ===
+// === выполнение бинарника (задание 8) ===
+void run_binary(char *cmd, char **args) {
     pid_t pid = fork();
     if (pid == 0) {
-        execlp(cmd, cmd, NULL);
-        perror("command not found");  // === Задание 6: проверка команды ===
+        execvp(cmd, args);
+        perror("execvp");
         exit(1);
-    } else if (pid > 0) {
-        wait(NULL);
-    } else perror("fork failed");
+    } else wait(NULL);
+}
+
+// === echo (задание 5) ===
+void cmd_echo(char *str) {
+    printf("%s\n", str);
+}
+
+// === вывод переменной окружения (задание 7) ===
+void cmd_env(char *var) {
+    char *v = getenv(var);
+    if (!v) { printf("Variable not found\n"); return; }
+
+    char *tmp = strdup(v);
+    char *tok = strtok(tmp, ":");
+    while (tok) {
+        printf("%s\n", tok);
+        tok = strtok(NULL, ":");
+    }
+    free(tmp);
+}
+
+// === вывод информации о диске (задание 10) ===
+void cmd_list_disk(char *path) {
+    printf("== Disk partitions for %s ==\n", path);
+    system("lsblk");
+}
+
+// === обработка команд (задания 1–8,10) ===
+void process_command(char *line) {
+    if (!strcmp(line, "\\q")) exit(0);             // 3 — команда выхода
+    if (!strncmp(line, "echo ", 5)) {              // 5 — echo
+        cmd_echo(line + 5);
+        return;
+    }
+    if (!strncmp(line, "\\e $", 4)) {              // 7 — вывод переменной окружения
+        cmd_env(line + 4);
+        return;
+    }
+    if (!strncmp(line, "\\l ", 3)) {               // 10 — вывод списка разделов
+        cmd_list_disk(line + 3);
+        return;
+    }
+
+    // Выполнение бинарника (8)
+    char *args[32];
+    int i = 0;
+    char *tok = strtok(line, " ");
+    while (tok && i < 31) { args[i++] = tok; tok = strtok(NULL, " "); }
+    args[i] = NULL;
+
+    run_binary(args[0], args);
 }
 
 int main() {
-    // === Задание 9: сигнал SIGHUP ===
-    signal(SIGHUP, handle_sighup);
+    signal(SIGHUP, sighup_handler);
 
-    // === Задание 11: старт VFS ===
-    fuse_start();
+    // === запуск VFS (задание 11) ===
+    start_vfs();
 
-    // === Задание 4: история команд ===
-    using_history();
+    // === история команд (задание 4) ===
+    char histfile[256];
+    sprintf(histfile, "%s%s", getenv("HOME"), HISTORY_PATH);
+    read_history(histfile);
 
-    // === Задания 1,2: цикл чтения команд с Ctrl+D ===
+    // === цикл обработки команд (задания 1–2) ===
     while (1) {
-        char* line = readline("KubSH> ");
-        if (!line) {
-            if (sighup_received) { sighup_received = 0; continue; }
-            break;
-        }
+        char *line = readline("kubsh> ");
+        if (!line) break;  // Ctrl+D — 2
 
-        if (*line) add_history(line);  // === Задание 4: добавление в историю ===
-        execute_command(line);          // Выполнение команды
+        if (*line) add_history(line);
+        process_command(line);
         free(line);
     }
+
+    write_history(histfile);
     return 0;
 }
