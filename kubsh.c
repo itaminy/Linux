@@ -1,131 +1,222 @@
-#define FUSE_USE_VERSION 35
-#include <ctype.h>
-#include <fcntl.h>
+// kubsu.c
+#define _GNU_SOURCE
 #include <stdio.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
-#include <unistd.h>
-#include <pwd.h>
-#include <pthread.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <inttypes.h>
+
 #include <readline/readline.h>
 #include <readline/history.h>
 
-#include "vfs.h"
+#include "vfs.h"  // содержит декларации: void fuse_start(void); void print_disk_info(const char*);
 
-#define HISTORY_FILE ".kubsh_history"
-
+// -------------------- SIGHUP --------------------
 volatile sig_atomic_t sighup_received = 0;
-
-void handle_sighup(int sig) {
+static void handle_sighup(int sig) {
     (void)sig;
     const char msg[] = "\nConfiguration reloaded\n";
-    write(STDOUT_FILENO, msg, sizeof(msg)-1);
+    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
     sighup_received = 1;
 }
 
-void load_history() {
+// -------------------- History --------------------
+#define HISTORY_FILENAME ".kubsh_history"
+static void load_history_file(void) {
     char *home = getenv("HOME");
-    if (!home) home = "";
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s", home, HISTORY_FILE);
+    if (!home) return;
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", home, HISTORY_FILENAME);
     read_history(path);
 }
-
-void save_history_to_file() {
+static void save_history_file(void) {
     char *home = getenv("HOME");
-    if (!home) home = "";
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s", home, HISTORY_FILE);
+    if (!home) return;
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", home, HISTORY_FILENAME);
     write_history(path);
 }
 
-void expand_tilde(char **cmd) {
-    char *tilde = strchr(*cmd, '~');
-    if (!tilde) return;
+// -------------------- Utilities --------------------
+static void expand_tilde_in_command(char **command) {
+    if (!command || !*command) return;
+    char *p = strchr(*command, '~');
+    if (!p) return;
     char *home = getenv("HOME");
-    if (!home) home = "";
-    char buf[1024];
-    size_t pre = tilde - *cmd;
-    strncpy(buf, *cmd, pre);
-    buf[pre] = '\0';
-    strcat(buf, home);
-    strcat(buf, tilde + 1);
-    free(*cmd);
-    *cmd = strdup(buf);
+    if (!home) return;
+    size_t newlen = strlen(*command) + strlen(home) + 1;
+    char *expanded = malloc(newlen);
+    if (!expanded) return;
+    size_t prefix = p - *command;
+    memcpy(expanded, *command, prefix);
+    expanded[prefix] = '\0';
+    strcat(expanded, home);
+    strcat(expanded, p + 1);
+    free(*command);
+    *command = expanded;
 }
 
-int execute_external_command(const char *cmd) {
-    if (strncmp(cmd, "echo ", 5) == 0) {
-        printf("%s\n", cmd + 5);
-        return 1;
+// -------------------- Command parsing/execution --------------------
+static char **parse_command(char *command) {
+    if (!command) return NULL;
+    int capacity = 8;
+    char **argv = malloc(sizeof(char*) * capacity);
+    if (!argv) return NULL;
+    int argc = 0;
+    char *tok = strtok(command, " ");
+    while (tok) {
+        if (argc + 1 >= capacity) {
+            capacity *= 2;
+            argv = realloc(argv, sizeof(char*) * capacity);
+            if (!argv) return NULL;
+        }
+        argv[argc++] = tok;
+        tok = strtok(NULL, " ");
     }
-    if (strncmp(cmd, "\\e $", 4) == 0) {
-        char *var = getenv(cmd + 4);
-        if (var) {
-            char *token = strtok(strdup(var), ":");
-            while (token) {
-                printf("%s\n", token);
-                token = strtok(NULL, ":");
+    argv[argc] = NULL;
+    return argv;
+}
+
+static void execute_command(char **argv) {
+    if (!argv || !argv[0]) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        fprintf(stderr, "%s: command not found\n", argv[0]);
+        _exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        perror("fork");
+    } else {
+        waitpid(pid, NULL, 0);
+    }
+}
+
+// -------------------- Builtin / external command handler --------------------
+typedef enum { CMD_OK, CMD_UNKNOWN, CMD_ERROR } CommandStatus;
+
+static CommandStatus execute_external_command(const char *command) {
+    if (!command) return CMD_UNKNOWN;
+
+    // debug command: debug 'text' or debug text
+    if (strncmp(command, "debug", 5) == 0 && (command[5] == ' ' || command[5] == '\0')) {
+        const char *to_print = (command[5] == ' ') ? command + 6 : command + 5;
+        if (*to_print == '\'') {
+            size_t len = strlen(to_print);
+            if (len > 1 && to_print[len-1] == '\'') {
+                char *tmp = strndup(to_print+1, len-2);
+                if (tmp) { printf("%s\n", tmp); free(tmp); }
+                return CMD_OK;
             }
         }
-        return 1;
+        printf("%s\n", to_print);
+        return CMD_OK;
     }
-    if (strncmp(cmd, "\\l ", 3) == 0) {
-        char disk[256];
-        snprintf(disk, sizeof(disk), "/dev/%s", cmd+3);
-        print_disk_info(disk);
-        return 1;
+
+    // \e $VAR -> print env var splitted by :
+    if (strncmp(command, "\\e $", 4) == 0) {
+        const char *var = command + 4;
+        if (!*var) { fprintf(stderr, "Environment variable is empty\n"); return CMD_ERROR; }
+        char *value = getenv(var);
+        if (!value) { fprintf(stderr, "Environment variable does not exist\n"); return CMD_ERROR; }
+        char *copy = strdup(value);
+        if (!copy) return CMD_ERROR;
+        char *tok = strtok(copy, ":");
+        while (tok) {
+            puts(tok);
+            tok = strtok(NULL, ":");
+        }
+        free(copy);
+        return CMD_OK;
     }
-    if (strncmp(cmd, "cd ", 3) == 0) {
-        if (chdir(cmd + 3) != 0) perror("cd");
-        return 1;
+
+    // \l disk_suffix  -> print disk partitions using print_disk_info
+    if (strncmp(command, "\\l", 2) == 0) {
+        const char *suf = command + 2;
+        while (*suf == ' ') ++suf;
+        if (*suf == '\0') { fprintf(stderr, "Disk is not selected\n"); return CMD_ERROR; }
+        char disk[64];
+        snprintf(disk, sizeof(disk), "/dev/%s", suf);
+        print_disk_info(disk); // implemented in vfs.c
+        return CMD_OK;
     }
-    if (strcmp(cmd, "debug") == 0 || strncmp(cmd, "debug ", 6) == 0) {
-        printf("%s\n", cmd + 6);
-        return 1;
+
+    // cd command
+    if (strncmp(command, "cd", 2) == 0) {
+        if (command[2] == ' ' && command[3] != '\0') {
+            if (chdir(command + 3) != 0) {
+                fprintf(stderr, "Directory is not found\n");
+                return CMD_ERROR;
+            }
+            return CMD_OK;
+        } else {
+            fprintf(stderr, "Directory is not selected\n");
+            return CMD_ERROR;
+        }
     }
-    return 0;
+
+    // stone (ASCII art)
+    if (strcmp(command, "stone") == 0) {
+        puts(":::...STONE ASCII...:::");
+        return CMD_OK;
+    }
+
+    return CMD_UNKNOWN;
 }
 
-int main() {
+// -------------------- Main loop --------------------
+int main(void) {
     signal(SIGHUP, handle_sighup);
-    load_history();
-    fuse_start(); // запускаем VFS в отдельном потоке
+    setbuf(stdout, NULL);
+
+    // history
+    using_history();
+    load_history_file();
+
+    // start VFS in background
+    fuse_start();
 
     while (1) {
-        if (sighup_received) sighup_received = 0;
-        char *input = readline("KubSH> ");
-        if (!input) break;
-
-        expand_tilde(&input);
-
-        if (strlen(input) == 0) { free(input); continue; }
-        add_history(input);
-
-        if (strcmp(input, "\\q") == 0) {
-            free(input);
+        if (sighup_received) { sighup_received = 0; }
+        char *cmd = readline("\033[1;34mKubSH> \033[0m");
+        if (!cmd) {
+            // EOF (Ctrl+D)
             break;
         }
 
-        if (!execute_external_command(input)) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                execlp("/bin/sh", "sh", "-c", input, NULL);
-                perror("exec");
-                exit(1);
-            } else if (pid > 0) {
-                wait(NULL);
-            } else {
-                perror("fork");
+        expand_tilde_in_command(&cmd);
+
+        if (*cmd) add_history(cmd);
+
+        // exit command
+        if (strcmp(cmd, "\\q") == 0) { free(cmd); break; }
+
+        if (*cmd) {
+            // save history each command
+            save_history_file();
+
+            // builtin / special handling
+            CommandStatus status = execute_external_command(cmd);
+            if (status == CMD_UNKNOWN) {
+                // execute external binary
+                char *cmdcopy = strdup(cmd);
+                char **argv = parse_command(cmdcopy);
+                if (argv) {
+                    execute_command(argv);
+                    free(argv);
+                }
+                free(cmdcopy);
             }
         }
-        free(input);
-        save_history_to_file();
+
+        free(cmd);
     }
+
+    // final history save
+    save_history_file();
     return 0;
 }
