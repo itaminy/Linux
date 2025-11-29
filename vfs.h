@@ -1,7 +1,11 @@
+// vfs.h
 #ifndef VFS_H
 #define VFS_H
 
-void fuse_start();
-void print_disk_info(const char *disk);
+// Запустить VFS (монтируется в ~/users в отдельном потоке)
+void fuse_start(void);
 
-#endif
+// Вывод информации о разделе (используется командой \l /dev/...)
+void print_disk_info(const char *device);
+
+#endif // VFS_H
