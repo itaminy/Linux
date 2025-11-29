@@ -10,7 +10,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
-
+#include <limits.h>
 #include "vfs.h"
 
 static struct fuse_operations users_ops;
@@ -151,7 +151,7 @@ static void *fuse_thread(void *arg) {
     if (!fuse) { fprintf(stderr, "fuse_new failed\n"); return NULL; }
     if (fuse_mount(fuse, mountpoint) != 0) { fprintf(stderr, "fuse_mount failed\n"); fuse_destroy(fuse); return NULL; }
     fuse_loop(fuse);
-    fuse_unmount(mountpoint);
+    fuse_unmount(fuse);
     fuse_destroy(fuse);
     return NULL;
 }
@@ -180,3 +180,5 @@ void print_disk_info(const char *device) {
         perror("fork");
     }
 }
+
+
