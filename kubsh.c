@@ -1,4 +1,3 @@
-// kubsu.c
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <inttypes.h>
-
+#include <limits.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -167,7 +166,6 @@ static CommandStatus execute_external_command(const char *command) {
 
     return CMD_UNKNOWN;
 }
-
 // -------------------- Main loop --------------------
 int main(void) {
     signal(SIGHUP, handle_sighup);
@@ -220,3 +218,4 @@ int main(void) {
     save_history_file();
     return 0;
 }
+
