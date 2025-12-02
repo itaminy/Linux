@@ -1,0 +1,9 @@
+Package: kubsh
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer:  <@localhost>
+Description: Custom shell
+ KubSH is a custom shell implementation
+Depends: libreadline8
