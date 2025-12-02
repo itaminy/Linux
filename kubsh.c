@@ -336,11 +336,11 @@ static void create_vfs_structure(void) {
 
 // -------------------- Main loop --------------------
 int main(void) {
-    // Устанавливаем обработчик SIGHUP с использованием sigaction для надежности
+    // Устанавливаем обработчик SIGHUP
     struct sigaction sa;
     sa.sa_handler = handle_sighup;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART; // Важно для readline
+    sa.sa_flags = SA_RESTART | SA_NODEFER; // Важно для readline
     
     if (sigaction(SIGHUP, &sa, NULL) == -1) {
         perror("sigaction");
@@ -356,14 +356,19 @@ int main(void) {
     using_history();
     load_history_file();
     
+    // Настраиваем readline для асинхронной работы
+    rl_catch_signals = 0; // Отключаем обработку сигналов readline
+    
     while (1) {
+        char *cmd = readline("\033[1;34mKubSH> \033[0m");
+        
+        // Проверяем флаг сигнала после readline
         if (sighup_received) {
             sighup_received = 0;
-            // Пересоздаем VFS при получении SIGHUP
+            printf("\nConfiguration reloaded\n");
             create_vfs_structure();
         }
         
-        char *cmd = readline("\033[1;34mKubSH> \033[0m");
         if (!cmd) {
             // EOF (Ctrl+D)
             break;
