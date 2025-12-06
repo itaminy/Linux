@@ -1,54 +1,21 @@
-name: CI/CD Pipeline
+name: docker
 
 on:
   push:
-    branches: [ master ]
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
   workflow_dispatch:
- 
+
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    - name: check
+      run: ls -la /home/vboxuser/develop/c/shell && ls -la /home/vboxuser/develop/c/shell
+    - name: Pull test image
+      run: docker pull ltyxlk/kubsh_test:master
+    - name: Run tests
+      run: docker run -v /home/vboxuser/develop/c/shell:/mnt --cap-add SYS_ADMIN --cap-add KILL --device /dev/fuse --security-opt apparmor:unconfined tyvik/kubsh_test:master ./check.sh
 
-      - name: Install Dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y cmake build-essential dpkg-dev libfuse3-dev libreadline-dev
-
-      - name: Build DEB Package
-        run: |
-          make clean
-          make package
-
-      - name: Setup Docker container
-        run: | 
-          docker run -d --name kubsh-test \
-          --device /dev/fuse --cap-add SYS_ADMIN \
-          --security-opt apparmor:unconfined \
-          tyvik/kubsh_test:master tail -f /dev/null
-
-          docker exec kubsh-test bash -c "
-          apt update
-          apt install -y fuse3 adduser
-          ln -sf /usr/lib/x86_64-linux-gnu/libfuse3.so /usr/lib/x86_64-linux-gnu/libfuse3.so.3
-          "
-        
-      - name: Copy files to container
-        run: |
-          docker cp kubsh.deb kubsh-test:/mnt/
-
-      - name: Run tests in container
-        run: |
-          docker exec kubsh-test bash -c "
-            cd /mnt && apt install -y ./kubsh.deb
-            cd /opt && pytest -v
-          "
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kubsh-package
-          path: kubsh.deb
